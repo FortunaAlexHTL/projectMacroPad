@@ -66,7 +66,7 @@ public class ArduinoController
 
         try
         {
-            // Development-only simulated ports. Remove before shipping.
+            // Development-only simulated ports. TODO Remove before shipping.
             developmentPorts = Directory.GetFiles("/tmp", "cu.usbmodem*");
         }
         catch (Exception exception) when (exception is IOException || exception is UnauthorizedAccessException)
