@@ -1,186 +1,206 @@
-# Macro Pad
+# MacroPad
 
-**Five physical buttons. Your everyday Mac actions, one press away.**
+**A custom Arduino-powered macro keyboard with a C# companion application for macOS.**
 
-A DIY macro pad that connects an Arduino-compatible board to a macOS companion app. The board sends button presses over USB serial, and the C# app turns them into keyboard shortcuts or application launches.
+MacroPad is a personal hardware and software project designed to turn physical button presses into configurable actions on a Mac.
 
-Built with **Arduino · C# · .NET 10 · macOS CoreGraphics**.
+The project combines Arduino firmware, USB serial communication, automatic device identification, and a .NET application that manages connected devices and executes macros.
 
-[Watch the demo](demoVideo/MacroPad_Demo.MOV) · [Arduino firmware](onHardwareProgram/MacroPad.ino) · [Button mappings](MacroPad_application/settings.ini) · [Keycode reference](MacroPad_settings/keycodes.ini)
+> **Project status:** Active development — not yet a production-ready release.
 
-## What it does
+## Features
 
-- Connects five physical buttons to configurable Mac actions.
-- Sends keyboard shortcuts with Command, Shift, Option, and Control.
-- Launches applications through the macOS `open` command.
-- Stores button assignments and application targets in simple text files.
-- Uses a serial connection at **115200 baud** between the board and the Mac.
+- **Automatic device discovery** — Detects compatible MacroPad devices connected through USB serial.
+- **Persistent device identification** — Assigns unique device IDs and stores them in Arduino EEPROM.
+- **Multiple-device support** — Manages multiple MacroPads with separate macro mappings.
+- **Configurable actions** — Supports keyboard shortcuts and launching macOS applications.
+- **Automatic configuration** — Creates default macro mappings when a new device is detected.
+- **JSON configuration** — Stores device settings and macro assignments in local files.
+- **Backup and recovery** — Creates timestamped configuration backups and supports recovery from damaged files.
+- **Logging** — Records application activity, warnings, and errors.
+- **Graceful shutdown** — Handles Ctrl+C and releases active serial connections and discovery resources.
+
+## How It Works
 
 ```text
-Button press → Arduino → USB serial → C# companion app → Mac action
+┌──────────────────────┐
+│    Arduino MacroPad  │
+│   Physical Buttons   │
+└──────────┬───────────┘
+           │
+           │ USB Serial
+           ▼
+┌──────────────────────┐
+│   ArduinoController  │
+│ Discovery & Identity │
+└──────────┬───────────┘
+           │
+           ▼
+┌──────────────────────┐
+│  MacroPadController  │
+│    Macro Matching    │
+└──────────┬───────────┘
+           │
+           ▼
+┌──────────────────────┐
+│    MacOSController   │
+│    Action Execution  │
+└──────────────────────┘
 ```
 
-The companion app must stay running to handle button presses. The board sends serial messages; the Mac app creates the keyboard events.
+When a MacroPad is connected, the application discovers the device, identifies it through a serial handshake, and loads its configured macros.
 
-## Hardware and wiring
+When a button is pressed, the Arduino sends a button code to the application. The application matches the code and device ID against the saved configuration and executes the corresponding action.
 
-You will need an Arduino-compatible board with USB serial, five momentary push buttons, connecting wires, and a USB data cable. A breadboard is useful for prototyping.
+## Technology Stack
 
-Connect each button between its assigned digital pin and **GND**. The firmware enables `INPUT_PULLUP`, so an unpressed button reads `HIGH` and a pressed button reads `LOW`.
+| Component | Technology |
+|---|---|
+| Desktop application | C# / .NET |
+| Target operating system | macOS |
+| Firmware | Arduino / C++ |
+| Communication | USB Serial |
+| Configuration | JSON |
+| Device identification | EEPROM |
+| Development environment | JetBrains Rider, Arduino IDE |
 
-| Button | Digital pin | Serial message | Included mapping |
-| :--- | :---: | :---: | :--- |
-| 1 | 6 | `10` | Command + C |
-| 2 | 5 | `20` | Command + V |
-| 3 | 4 | `30` | Open JetBrains Rider |
-| 4 | 3 | `40` | Send keycode `74` |
-| 5 | 2 | `50` | Send keycode `72` |
+## Getting Started
 
-Each press sends a newline-terminated message. Holding a button does not intentionally repeat the action; the firmware detects the transition from released to pressed. Mechanical button bounce can still cause extra events because software debouncing is not implemented yet.
+### Requirements
 
-## Getting started
+- macOS
+- .NET SDK compatible with the application project
+- Arduino IDE
+- Compatible Arduino board (developed using Arduino Mega 2560)
+- USB connection
 
-### 1. Prepare the tools
+### Build the application
 
-- A Mac to run the companion app, which calls the macOS CoreGraphics framework.
-- The **.NET 10 SDK**, matching the projects' `net10.0` target.
-- The Arduino IDE and board support for your chosen board.
+Clone the repository:
 
-### 2. Upload the firmware
-
-Open [`onHardwareProgram/MacroPad.ino`](onHardwareProgram/MacroPad.ino) in the Arduino IDE, select your board and serial port, and upload it. If the IDE asks to place the sketch in a folder named `MacroPad`, accept that prompt.
-
-To check the wiring, open Serial Monitor at **115200 baud** and press each button. You should see `10`, `20`, `30`, `40`, or `50` on separate lines. Close Serial Monitor before starting the companion app so it can use the serial port.
-
-### 3. Set the local paths and serial port
-
-The current app uses hardcoded paths. Before running it, edit [`MacroPad_application/Program.cs`](MacroPad_application/Program.cs):
-
-| Setting | What to enter |
-| :--- | :--- |
-| `SettingsFilePath` | Absolute path to your checkout's `MacroPad_application/settings.ini` |
-| `AppsFilePath` | Absolute path to your checkout's `MacroPad_application/apps.ini` |
-| First argument to `new SerialPort(...)` | Your board's serial device, replacing `/dev/cu.usbmodem11401` |
-
-Find available serial devices in Terminal:
-
-```sh
-ls /dev/cu.*
+```bash
+git clone https://github.com/FortunaAlexHTL/MacroPad_Project.git
+cd MacroPad_Project
 ```
 
-Choose the device that appears when you connect the board. Keep the baud rate at `115200` to match the firmware.
+Build the .NET application:
 
-### 4. Allow keyboard control
+```bash
+dotnet build MacroPad_application/MacroPad_application.csproj
+```
 
-In **System Settings → Privacy & Security → Accessibility**, allow the terminal or IDE you use to run the companion app to control your Mac. Restart that terminal or IDE if macOS requests it.
+Run it:
 
-### 5. Run the companion app
-
-From the repository root:
-
-```sh
-dotnet restore MacroPad_application/MacroPad_application.csproj
+```bash
 dotnet run --project MacroPad_application/MacroPad_application.csproj
 ```
 
-When the app prints `MacroPad is running!`, press a button to trigger its assigned action. Keyboard events are sent to the currently focused application. Use **Control + C** in the running terminal to stop the companion app.
+### Upload the firmware
 
-## Customize your buttons
+1. Open `Firmware/MacroPad/MacroPad.ino` in Arduino IDE.
+2. Select the appropriate Arduino board and serial port.
+3. Upload the firmware.
+4. Connect the Arduino to your Mac.
+5. Start the MacroPad application.
 
-### Keyboard shortcuts
+The application should attempt to discover and identify the connected device.
 
-[`settings.ini`](MacroPad_application/settings.ini) contains one semicolon-separated row per button. Each row has **six integer fields**:
+### Configure macros
 
-```text
-button_code; action_type; value_1; value_2; value_3; value_4
-```
-
-- `button_code` matches the message sent by the Arduino.
-- `action_type` is `0` for keyboard actions or `1` for application launches.
-- Keyboard actions support up to four keycodes, including modifiers.
-- Use `-1` for unused trailing fields. The first `-1` ends the action's values.
-
-For example, these rows assign **Command + C** to button 1 and **Command + Shift + V** to button 2:
-
-```ini
-10; 0; 55; 8; -1; -1
-20; 0; 55; 56; 9; -1
-```
-
-| Modifier | Supported keycode |
-| :--- | :---: |
-| Command | `55` |
-| Shift | `56` |
-| Option | `58` |
-| Control | `59` |
-
-See [`keycodes.ini`](MacroPad_settings/keycodes.ini) for the included keycode reference. The companion app recognizes only the four modifier codes above as modifiers, even though the reference also lists right-hand variants. Keycodes represent physical keys, so the resulting character or shortcut can depend on your keyboard layout and the focused app.
-
-Modifiers are held while the remaining keys are pressed and released in sequence. A row with multiple ordinary keys therefore sends a sequence under the same modifiers.
-
-### Application launches
-
-Use action type `1` and an application identifier in `settings.ini`:
-
-```ini
-30; 1; 127; -1; -1; -1
-```
-
-Then define that identifier in [`apps.ini`](MacroPad_application/apps.ini):
-
-```ini
-127;-a /Applications/Rider.app
-```
-
-The text after the semicolon is passed to macOS `open`. Change it to the application you want to launch. Quote paths containing spaces, for example:
-
-```ini
-128;-a "/Applications/Visual Studio Code.app"
-```
-
-To use this second entry, set the corresponding button's application identifier to `128`.
-
-### Configuration rules
-
-- Keep a valid mapping for every button the firmware can send.
-- Use exactly six integer fields per row in `settings.ini`, with unused fields filled by `-1`.
-- Do not add blank lines, comments, or section headers. Despite their `.ini` extension, these files use a custom semicolon-separated format.
-- Use matching application identifiers in both files, with no surrounding spaces in the identifier field in `apps.ini`.
-- Restart the companion app after changing button mappings; `settings.ini` is loaded at startup. Application targets are read when an app-launch action runs.
-
-## Project layout
+MacroPad stores configuration under:
 
 ```text
-MacroPad_project/
-├── onHardwareProgram/
-│   └── MacroPad.ino                 # Button inputs and serial messages
-├── MacroPad_application/
-│   ├── Program.cs                   # Serial listener and macOS actions
-│   ├── MacroPad_application.csproj  # .NET 10 console project
-│   ├── settings.ini                 # Button-to-action mappings
-│   └── apps.ini                     # Application launch targets
-├── MacroPad_settings/
-│   ├── Program.cs                   # Placeholder for a settings tool
-│   ├── MacroPad_Settings.csproj     # Settings tool project
-│   └── keycodes.ini                 # Keycode reference
-├── demoVideo/
-│   └── MacroPad_Demo.MOV            # Project demo
-└── MacroPad.slnx                    # Solution file
+~/Library/Application Support/MacroPad/
+├── config.json
+├── macros.json
+└── Backups/
 ```
 
-## Troubleshooting
+Macros are associated with an Arduino device ID and a button code.
 
-| Symptom | What to check |
-| :--- | :--- |
-| Serial port cannot be opened | Connect the board, confirm its device path, and close Serial Monitor or any other app using that port. |
-| Configuration file cannot be found | Update both absolute paths in `Program.cs` to point to your checkout. |
-| Button presses do not produce shortcuts | Check Accessibility permission for the terminal or IDE, then confirm the intended app has focus. |
-| An application does not launch | Check the application identifier, installation path, and quoting in `apps.ini`. |
-| One press triggers multiple actions | Check the wiring and switch bounce; the current firmware has no debounce logic. |
-| The app stops after a button press | Check the six-field mapping and serial message. Invalid or unmapped input is not handled gracefully yet. |
+The current development version uses JSON files for configuration. A dedicated graphical settings interface is planned.
 
-## Current status
+## Serial Communication
 
-This is a working prototype with manual configuration. The `MacroPad_settings` project currently prints `Hello, World!`; it does not edit settings yet. Serial reconnection, configuration validation, software debouncing, and automatic startup are not implemented.
+The application and firmware communicate using a simple text-based serial protocol.
 
-**Created by Fortuna Alexandru Cristian.**
+Example device identification:
+
+```text
+Application → WHO_ARE_YOU?
+Arduino     → MACROPAD:<device-id>
+```
+
+An unconfigured device can receive a new ID:
+
+```text
+Application → SET_ID:<new-id>
+Arduino     → OK:<new-id>
+```
+
+The Arduino stores its assigned ID in EEPROM, allowing it to retain its identity after disconnection or restart.
+
+Physical button presses are sent as numeric codes, currently:
+
+`10`, `20`, `30`, `40`, `50`
+
+See `Firmware/SerialProtocol.md` for the protocol documentation.
+
+## Project Structure
+
+| Path | Responsibility |
+|---|---|
+| `MacroPad_application/Program.cs` | Application startup and main execution loop |
+| `MacroPad_application/Controllers/` | Device discovery, macro matching, and macOS actions |
+| `MacroPad_application/Connections/` | Individual serial connections |
+| `MacroPad_application/Models/` | Application data models |
+| `MacroPad_application/ConfigurationManager.cs` | Configuration loading, saving, and recovery coordination |
+| `MacroPad_application/Backup/` | Configuration backup and restoration |
+| `MacroPad_application/Logger.cs` | Application logging |
+| `Firmware/` | Arduino firmware and serial protocol documentation |
+
+## Development Roadmap
+
+### Implemented
+
+- [x] Arduino button input
+- [x] USB serial communication
+- [x] Automatic device discovery
+- [x] Persistent device IDs
+- [x] Multiple-device management
+- [x] Keyboard and application-launch macros
+- [x] JSON configuration
+- [x] Automatic default macro creation
+- [x] Backup and recovery system
+- [x] Application logging
+- [x] Graceful shutdown implementation
+
+### Planned / In Progress
+
+- [ ] Graphical settings application
+- [ ] Improved configuration validation and safe file writing
+- [ ] Complete hardware and shutdown testing
+- [ ] macOS Accessibility permission handling
+- [ ] Remove development-only simulator behavior from release builds
+- [ ] Package the application for macOS
+- [ ] Complete V1.0 release testing
+
+## Current Limitations
+
+MacroPad is still under development.
+
+- Configuration currently requires editing JSON files.
+- The application targets macOS.
+- A packaged installer is not yet available.
+- Some development-only functionality remains in the codebase.
+- Hardware compatibility and release reliability are not yet fully validated.
+
+## About the Project
+
+MacroPad started as a personal learning project combining software development with physical electronics.
+
+Its goal is to explore serial communication, embedded programming, C# application architecture, configuration management, and the interaction between software and real-world hardware.
+
+The project is developed independently as part of an ongoing programming and embedded-systems learning journey.
+
+**Developed by Alexandru-Cristian Fortuna.**

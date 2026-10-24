@@ -6,240 +6,235 @@
 //               MacroPad               //
 //--------------------------------------//
 
+// Description: Coordinates configuration, connected boards and macro execution.
 namespace MacroPad_application;
 
-using System;
-using System.IO.Ports;
-using System.Runtime.InteropServices;
+using System.ComponentModel;
 using System.Diagnostics;
+using Backup;
+using Connections;
+using Controllers;
+using Models;
 
 class Program
 {
-    [DllImport("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")] //Importing the CoreGraphics framework
-    static extern IntPtr CGEventCreateKeyboardEvent(
-        IntPtr source,
-        ushort virtualKey,
-        bool keyDown
-    );
+    private static volatile bool _isRunning = true;
 
-    [DllImport("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")] //Importing the CoreGraphics framework
-    static extern void CGEventPost(
-        uint tap,
-        IntPtr @event
-    );
-    
-    [DllImport("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")]
-    static extern void CGEventSetFlags(IntPtr @event, ulong flags);
-
-    const ulong CommandFlag = 0x00100000;
-    const ulong ShiftFlag = 0x00020000;
-    const ulong OptionFlag = 0x00080000;
-    const ulong ControlFlag = 0x00040000;
-    private const int MaxLength = 5;
-    private const string SettingsFilePath =
-        "/Users/fortunaalex/Documents/Development/MacroPad/MacroPad_application/settings.ini";
-    private const string AppsFilePath =
-        "/Users/fortunaalex/Documents/Development/MacroPad/MacroPad_application/apps.ini";
-    // -1 == Empty keycode box!!
-    
     static void Main(string[] args)
     {
-        SerialPort arduinoMega = new SerialPort("/dev/cu.usbmodem11401", 115200); //Opening the serial port
-        arduinoMega.Open();
-        int[,] definedMacro = ReadFile(SettingsFilePath); //Reading the macro from the settings file
-        
-        Console.WriteLine("MacroPad is running!");
-        
-        
-        while (true)
-        {
-            
-            string receivedData = arduinoMega.ReadLine();
-            int buttonCode = Convert.ToInt32(receivedData); 
+        Logger logger = new Logger();
+        ConfigurationManager configurationManager = new ConfigurationManager();
+        BackupManager backupManager = new BackupManager();
+        Console.WriteLine("- MacroPad is running ...\n");
+        logger.LogInfo("MacroPad application started.");
 
-            int[] receivedMacro = MacroController(buttonCode, definedMacro); // Getting the macro from the settings file based on the button pressed
-            receivedMacro = GetMacroType(receivedMacro, out bool isApp); // Getting the macro type from the settings file based on the button pressed
-            KeyboardController(receivedMacro, isApp); // Actioning the commands
+        Config? config = null;
+        Macro[] macros = [];
+        bool loaded = configurationManager.ReadAllFiles(ref config, ref macros, out bool defaultsCreated);
+        if (!loaded || config == null)
+        {
+            Console.WriteLine("Configuration could not be loaded. Check the log and configuration files.");
         }
-    }
-
-    static int[] MacroController(int buttonCode, int[,] macro) // Finished
-    {
-        int[] tempReceivedMacro = new int[MaxLength];
-        int loopCounter = 0;
-        
-        for (int i = 0; i < macro.GetLength(0); i++)
+        else if (defaultsCreated)
         {
-            if (buttonCode == Convert.ToInt32(macro[i, 0]))
-            {
-                for (int q = 1; q < macro.GetLength(1) && macro[i, q] != -1; q++)
-                { 
-                    tempReceivedMacro[q - 1] = macro[i, q]; 
-                    loopCounter++;
-                }
-            }
+            Console.WriteLine("Default files were created. Configure your settings before restarting.");
+            // TODO: Open Settings for first-time configuration.
         }
-        
-        int[] receivedMacro = new int[loopCounter];
-
-        for (int i = 0; i < receivedMacro.Length; i++)
+        else if (config.BaudRate <= 0)
         {
-            receivedMacro[i] = tempReceivedMacro[i];
-        }
-        
-        return receivedMacro;
-    }
-
-    static int[] GetMacroType(int[] macro, out bool isApp) // Finished
-    {
-        int[] newMacro = new int[macro.Length-1];
-
-        if (macro[0] == 0)
-        {
-            isApp = false;
+            logger.LogError("BaudRate must be a positive number. Check config.json.");
         }
         else
         {
-            isApp = true;
+            RunApplication(config, macros, configurationManager, backupManager, logger);
         }
-        
-        for (int i = 1; i < macro.Length; i++)
-        {
-            newMacro[i-1] = macro[i];
-        }
-        
-        return newMacro;
     }
 
-    static void KeyboardController(int[] receivedMacro, bool isApp) // Finished
+    /// <summary>Coordinates serial reading and staged discovery until cancellation.</summary>
+    /// <param name="config">The loaded serial configuration.</param>
+    /// <param name="macros">The current macro mappings.</param>
+    /// <param name="configurationManager">Saves presets for new devices.</param>
+    /// <param name="backupManager">Backs up successfully saved presets.</param>
+    /// <param name="logger">Reports errors without stopping other devices.</param>
+    private static void RunApplication(Config config, Macro[] macros, ConfigurationManager configurationManager,
+        BackupManager backupManager, Logger logger)
     {
-        if (isApp)
+        ArduinoController arduinoController = new ArduinoController();
+        MacroPadController macroPadController = new MacroPadController();
+        MacOSController macOsController = new MacOSController();
+        ArduinoConnection[] connections = [];
+        string[] candidatePorts = [];
+        int candidateIndex = 0;
+        Stopwatch discoveryTimer = Stopwatch.StartNew();
+
+        _isRunning = true;
+        Console.CancelKeyPress += HandleCancel;
+        Console.WriteLine("- Searching for devices ...");
+
+        try
         {
-            string appPath = GetAppPath(receivedMacro[0].ToString());
-            
-            Process.Start("open", appPath);
+            while (_isRunning)
+            {
+                ReadConnections(connections, macros, macroPadController, macOsController, logger);
+                connections = arduinoController.RemoveInactiveConnections(connections);
+
+                bool candidatesFinished = candidateIndex >= candidatePorts.Length;
+                if (discoveryTimer.ElapsedMilliseconds >= 3000 &&
+                    !arduinoController.IsDiscoveryRunning() && candidatesFinished)
+                {
+                    candidatePorts = arduinoController.GetNewPortNames(connections);
+                    candidateIndex = 0;
+                    discoveryTimer.Restart();
+                }
+
+                if (!arduinoController.IsDiscoveryRunning() && candidateIndex < candidatePorts.Length)
+                {
+                    arduinoController.StartDiscovery(candidatePorts[candidateIndex], config.BaudRate);
+                    candidateIndex++;
+                }
+
+                Arduino? device = arduinoController.UpdateDiscovery(connections);
+                if (device != null)
+                {
+                    connections = arduinoController.AddConnection(connections, device, config.BaudRate);
+                    if (arduinoController.IsPortAlreadyOpen(device.Port, connections))
+                    {
+                        macros = EnsureDevicePreset(macros, device.Id, configurationManager, backupManager, logger);
+                    }
+                }
+
+                Thread.Sleep(10);
+            }
+        }
+        finally
+        {
+            // finally also runs if an unexpected error leaves the application loop.
+            Console.CancelKeyPress -= HandleCancel;
+            arduinoController.ResetDiscovery();
+            for (int i = 0; i < connections.Length; i++)
+            {
+                connections[i].Disconnect();
+            }
+            Console.WriteLine("\n- Stopping ...");
+        }
+    }
+
+    /// <summary>Requests that the main loop stop after its current operation.</summary>
+    /// <param name="sender">The console event source.</param>
+    /// <param name="eventArgs">Cancels immediate termination so finally can close the ports.</param>
+    private static void HandleCancel(object? sender, ConsoleCancelEventArgs eventArgs)
+    {
+        eventArgs.Cancel = true;
+        _isRunning = false;
+    }
+
+    /// <summary>Processes at most one message per connection without letting an action failure stop other boards.</summary>
+    /// <param name="connections">Current serial connections.</param>
+    /// <param name="macros">Current macro mappings.</param>
+    /// <param name="macroPadController">Finds the configured action.</param>
+    /// <param name="macOsController">Executes the action.</param>
+    /// <param name="logger">Records action failures with device context.</param>
+    private static void ReadConnections(ArduinoConnection[] connections, Macro[] macros,
+        MacroPadController macroPadController, MacOSController macOsController, Logger logger)
+    {
+        for (int i = 0; i < connections.Length; i++)
+        {
+            string? message = connections[i].ReadMessage();
+            if (message != null)
+            {
+                try
+                {
+                    ProcessMessage(message, connections[i].Device.Id, macros, macroPadController, macOsController);
+                }
+                catch (Exception exception) when (exception is InvalidDataException || exception is InvalidOperationException
+                                                  || exception is Win32Exception || exception is IOException
+                                                  || exception is UnauthorizedAccessException || exception is ArgumentException
+                                                  || exception is DllNotFoundException || exception is EntryPointNotFoundException)
+                {
+                    logger.LogError($"Action failed for device {connections[i].Device.Id}, message '{message}': {exception.Message}");
+                }
+            }
+        }
+    }
+
+    /// <summary>Creates and saves the existing five-button preset only when a device has no mappings.</summary>
+    /// <param name="macros">The mappings to preserve.</param>
+    /// <param name="deviceId">The newly connected device ID.</param>
+    /// <param name="configurationManager">Creates and saves the preset.</param>
+    /// <param name="backupManager">Backs up the saved files.</param>
+    /// <param name="logger">Reports a failed save.</param>
+    /// <returns>The enlarged array after a successful save, or the original array on failure.</returns>
+    private static Macro[] EnsureDevicePreset(Macro[] macros, string deviceId,
+        ConfigurationManager configurationManager, BackupManager backupManager, Logger logger)
+    {
+        Macro[] result = macros;
+        if (!IsDeviceConfigured(macros, deviceId))
+        {
+            Macro[] updatedMacros = macros;
+            configurationManager.CreateNewMacrosPreset(ref updatedMacros, deviceId);
+            bool saved = false;
+            try
+            {
+                configurationManager.WriteMacros(updatedMacros);
+                saved = true;
+            }
+            catch (InvalidDataException exception)
+            {
+                logger.LogError($"Could not save presets for {deviceId}: {exception.Message}");
+            }
+
+            if (saved)
+            {
+                backupManager.CreateBackup();
+                // TODO: Open Settings so the user can fill in the empty actions.
+                result = updatedMacros;
+            }
+        }
+        return result;
+    }
+
+    /// <summary>Routes button codes to macros and reports identity or invalid messages.</summary>
+    /// <param name="receivedData">One complete serial message.</param>
+    /// <param name="deviceId">The sending device ID.</param>
+    /// <param name="definedMacros">Current mappings.</param>
+    /// <param name="macroPadController">Finds the matching mapping.</param>
+    /// <param name="macOsController">Executes the selected action.</param>
+    private static void ProcessMessage(string receivedData, string deviceId, Macro[] definedMacros,
+        MacroPadController macroPadController, MacOSController macOsController)
+    {
+        if (int.TryParse(receivedData, out int buttonCode))
+        {
+            Macro? macro = macroPadController.FindMacro(definedMacros, buttonCode, deviceId);
+            if (macro != null)
+            {
+                macOsController.ExecuteMacro(macro);
+            }
         }
         else
         {
-            ulong modifierFlags = 0;
-
-            for (int i = 0; i < receivedMacro.Length; i++)
+            string[] parts = receivedData.Split(':', 2);
+            if (parts.Length == 2 && parts[0] == "MACROPAD" && parts[1] == deviceId)
             {
-                ushort keyCode = Convert.ToUInt16(receivedMacro[i]);
-
-                if (IsModifier(keyCode))
-                {
-                    modifierFlags |= GetModifierFlag(keyCode);
-                    KeyDown(keyCode, modifierFlags);
-                }
+                Console.WriteLine($"- Identity reply received from {deviceId}.");
             }
-
-            for (int i = 0; i < receivedMacro.Length; i++)
+            else
             {
-                ushort keyCode = Convert.ToUInt16(receivedMacro[i]);
-
-                if (!IsModifier(keyCode))
-                {
-                    KeyDown(keyCode, modifierFlags);
-                    KeyUp(keyCode, modifierFlags);
-                }
-            }
-
-            for (int i = receivedMacro.Length - 1; i >= 0; i--)
-            {
-                ushort keyCode = Convert.ToUInt16(receivedMacro[i]);
-
-                if (IsModifier(keyCode))
-                {
-                    KeyUp(keyCode, modifierFlags);
-                    modifierFlags &= ~GetModifierFlag(keyCode);
-                }
+                Console.WriteLine($"- Invalid message received: {receivedData}.");
             }
         }
     }
-    
-    static void KeyDown(ushort keyCode, ulong flags) // Finished
-    {
-        IntPtr keyDown = CGEventCreateKeyboardEvent(
-            IntPtr.Zero, keyCode, true);
 
-        CGEventSetFlags(keyDown, flags);
-        CGEventPost(0, keyDown);
-    }
-
-    static void KeyUp(ushort keyCode, ulong flags) // Finished
+    /// <summary>Checks whether any mapping belongs to a device, stopping at the first match.</summary>
+    /// <param name="definedMacros">The validated macro array.</param>
+    /// <param name="deviceId">The device ID to match exactly.</param>
+    /// <returns>True if a mapping exists; this does not mean all actions are configured.</returns>
+    private static bool IsDeviceConfigured(Macro[] definedMacros, string deviceId)
     {
-        IntPtr keyUp = CGEventCreateKeyboardEvent(
-            IntPtr.Zero, keyCode, false);
-
-        CGEventSetFlags(keyUp, flags);
-        CGEventPost(0, keyUp);
-    }
-    
-    static bool IsModifier(ushort keyCode) // Finished
-    {
-        return keyCode == 55 ||  // Command
-               keyCode == 56 ||  // Shift
-               keyCode == 58 ||  // Option
-               keyCode == 59;    // Control
-    }
-    
-    static ulong GetModifierFlag(ushort keyCode) // Finished
-    {
-        switch (keyCode)
+        bool found = false;
+        for (int i = 0; i < definedMacros.Length && !found; i++)
         {
-            case 55:
-                return CommandFlag;
-
-            case 56:
-                return ShiftFlag;
-
-            case 58:
-                return OptionFlag;
-
-            case 59:
-                return ControlFlag;
-
-            default:
-                return 0;
+            found = definedMacros[i].ArduinoDeviceId == deviceId;
         }
-    }
-
-    static string GetAppPath(string appIdentifier) // Finished
-    {
-        string[] fileContent = File.ReadAllLines(AppsFilePath);
-        string appPath = "";
-        
-        for (int i = 0; i < fileContent.Length; i++)
-        {
-            string[] app = fileContent[i].Split(";");
-            
-            if (app[0] == appIdentifier)
-            {
-                appPath = app[1];
-            }
-        }
-        
-        return appPath;
-    }
-    
-    static int[,] ReadFile(string path) // Finished
-    {
-        string[] fileContents = File.ReadAllLines(path);
-        int[,] tempMacro = new int[fileContents.Length, MaxLength + 1];
-
-        for (int i = 0; i < fileContents.Length; i++)
-        {
-            string[] macroContents = fileContents[i].Split(";");
-
-            for (int q = 0; q < macroContents.Length; q++)
-            {
-                tempMacro[i, q] = int.Parse(macroContents[q]);
-            }
-
-        }
-        
-        return tempMacro;
+        return found;
     }
 }
-

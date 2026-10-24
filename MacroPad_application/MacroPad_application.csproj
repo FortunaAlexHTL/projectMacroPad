@@ -8,8 +8,14 @@
     </PropertyGroup>
 
     <ItemGroup>
-      <PackageReference Include="System.Diagnostics.DiagnosticSource" Version="10.0.12" />
       <PackageReference Include="System.IO.Ports" Version="10.0.12" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Update="ConfigurationFiles/*.json">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+            <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+        </None>
     </ItemGroup>
 
 </Project>
